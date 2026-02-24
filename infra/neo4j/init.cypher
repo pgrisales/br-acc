@@ -51,6 +51,12 @@ CREATE INDEX person_author_key IF NOT EXISTS
 CREATE INDEX person_sq_candidato IF NOT EXISTS
   FOR (p:Person) ON (p.sq_candidato);
 
+CREATE INDEX person_cpf_middle6 IF NOT EXISTS
+  FOR (p:Person) ON (p.cpf_middle6);
+
+CREATE INDEX person_cpf_partial IF NOT EXISTS
+  FOR (p:Person) ON (p.cpf_partial);
+
 CREATE INDEX company_razao_social IF NOT EXISTS
   FOR (c:Company) ON (c.razao_social);
 
@@ -117,6 +123,9 @@ CREATE INDEX health_uf IF NOT EXISTS
 CREATE INDEX health_municipio IF NOT EXISTS
   FOR (h:Health) ON (h.municipio);
 
+CREATE INDEX health_atende_sus IF NOT EXISTS
+  FOR (h:Health) ON (h.atende_sus);
+
 // ── Education Indexes ───────────────────────────────────
 CREATE INDEX education_name IF NOT EXISTS
   FOR (e:Education) ON (e.name);
@@ -128,6 +137,9 @@ CREATE INDEX convenio_date IF NOT EXISTS
 // ── LaborStats Indexes ──────────────────────────────────
 CREATE INDEX laborstats_uf IF NOT EXISTS
   FOR (l:LaborStats) ON (l.uf);
+
+CREATE INDEX laborstats_cnae_subclass IF NOT EXISTS
+  FOR (l:LaborStats) ON (l.cnae_subclass);
 
 // ── Fulltext Search Index ───────────────────────────────
 CREATE FULLTEXT INDEX entity_search IF NOT EXISTS

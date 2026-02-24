@@ -32,7 +32,7 @@ def neo4j_container() -> Generator[Neo4jContainer]:
 @pytest.fixture(scope="session")
 def neo4j_driver(neo4j_container: Neo4jContainer) -> Generator[Driver]:
     uri = neo4j_container.get_connection_url()
-    driver = GraphDatabase.driver(uri, auth=("neo4j", neo4j_container.NEO4J_ADMIN_PASSWORD))
+    driver = GraphDatabase.driver(uri, auth=("neo4j", neo4j_container.password))
     # Apply schema
     schema_path = Path(__file__).parent.parent.parent.parent / "infra" / "neo4j" / "init.cypher"
     if schema_path.exists():

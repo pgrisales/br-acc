@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from neo4j import Driver
 from icarus_etl.loader import Neo4jBatchLoader
 from icarus_etl.transforms import (
+    cap_contract_value,
     deduplicate_rows,
     format_cnpj,
     format_cpf,
@@ -43,6 +44,14 @@ def _parse_brl(value: str | None) -> float:
         return float(cleaned)
     except ValueError:
         return 0.0
+
+
+def _extract_cpf_middle6(cpf_raw: str) -> str | None:
+    """Extract 6 middle digits from LGPD-masked CPF (***.ABC.DEF-**)."""
+    digits = strip_document(cpf_raw)
+    if len(digits) == 6:
+        return digits
+    return None
 
 
 class TransparenciaPipeline(Pipeline):
@@ -106,7 +115,7 @@ class TransparenciaPipeline(Pipeline):
             contracts.append({
                 "contract_id": f"{cnpj_digits}_{row['data_inicio']}",
                 "object": normalize_name(str(row["objeto"])),
-                "value": _parse_brl(str(row["valor"])),
+                "value": cap_contract_value(_parse_brl(str(row["valor"]))),
                 "contracting_org": normalize_name(str(row["orgao_contratante"])),
                 "date": date,
                 "cnpj": cnpj,
@@ -116,8 +125,10 @@ class TransparenciaPipeline(Pipeline):
 
         offices: list[dict[str, Any]] = []
         for _, row in self._raw_servidores.iterrows():
+            raw_cpf = str(row["cpf"])
             offices.append({
-                "cpf": format_cpf(str(row["cpf"])),
+                "cpf": format_cpf(raw_cpf),
+                "cpf_partial": _extract_cpf_middle6(raw_cpf),
                 "name": normalize_name(str(row["nome"])),
                 "org": normalize_name(str(row["orgao"])),
                 "salary": _parse_brl(str(row["remuneracao"])),
@@ -180,9 +191,12 @@ class TransparenciaPipeline(Pipeline):
         if self.offices:
             loader.load_nodes("PublicOffice", self.offices, key_field="cpf")
 
-            # Ensure Person nodes exist
+            # Ensure Person nodes exist (include cpf_partial for SAME_AS matching)
             persons = deduplicate_rows(
-                [{"name": o["name"], "cpf": o["cpf"]} for o in self.offices],
+                [
+                    {"name": o["name"], "cpf": o["cpf"], "cpf_partial": o["cpf_partial"]}
+                    for o in self.offices
+                ],
                 ["cpf"],
             )
             loader.load_nodes("Person", persons, key_field="cpf")

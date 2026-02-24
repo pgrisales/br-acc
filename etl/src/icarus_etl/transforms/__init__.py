@@ -8,8 +8,14 @@ from icarus_etl.transforms.document_formatting import (
     validate_cpf,
 )
 from icarus_etl.transforms.name_normalization import normalize_name
+from icarus_etl.transforms.value_sanitization import (
+    MAX_CONTRACT_VALUE,
+    cap_contract_value,
+)
 
 __all__ = [
+    "MAX_CONTRACT_VALUE",
+    "cap_contract_value",
     "deduplicate_rows",
     "format_cnpj",
     "format_cpf",

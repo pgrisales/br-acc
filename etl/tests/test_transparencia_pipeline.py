@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from icarus_etl.pipelines.transparencia import TransparenciaPipeline, _parse_brl
+from icarus_etl.pipelines.transparencia import (
+    TransparenciaPipeline,
+    _extract_cpf_middle6,
+    _parse_brl,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -192,6 +196,34 @@ def test_transform_skips_short_cnpj_contracts() -> None:
         assert len(c["cnpj"]) == 18  # XX.XXX.XXX/XXXX-XX
 
 
+def test_transform_caps_absurd_contract_value() -> None:
+    """Contracts with values above R$ 10B (data entry errors) get value=None."""
+    import pandas as pd
+
+    pipeline = _make_pipeline()
+    _extract_from_fixtures(pipeline)
+
+    # Add a row with a garbage R$ 50B value
+    absurd = pd.DataFrame([{
+        "cnpj_contratada": "88777666000100",
+        "razao_social": "Empresa Absurda Ltda",
+        "objeto": "Mudanca de 2 pessoas",
+        "valor": "50.000.000.000,00",
+        "orgao_contratante": "Prefeitura Municipal",
+        "data_inicio": "2024-07-01",
+    }])
+    pipeline._raw_contratos = pd.concat(
+        [pipeline._raw_contratos, absurd], ignore_index=True,
+    )
+
+    pipeline.transform()
+
+    absurd_contract = next(
+        c for c in pipeline.contracts if c["razao_social"] == "EMPRESA ABSURDA LTDA"
+    )
+    assert absurd_contract["value"] is None
+
+
 def test_parse_brl_handles_formats() -> None:
     assert _parse_brl("1.500.000,00") == 1_500_000.00
     assert _parse_brl("3.200.000,50") == 3_200_000.50
@@ -199,3 +231,75 @@ def test_parse_brl_handles_formats() -> None:
     assert _parse_brl("0") == 0.0
     assert _parse_brl("") == 0.0
     assert _parse_brl(None) == 0.0
+
+
+# ── cpf_partial extraction tests ───────────────────────────────────
+
+
+def test_extract_cpf_middle6_masked_cpf() -> None:
+    """LGPD-masked CPF (***.ABC.DEF-**) should return 6 middle digits."""
+    assert _extract_cpf_middle6("***.017.623-**") == "017623"
+    assert _extract_cpf_middle6("***.123.456-**") == "123456"
+
+
+def test_extract_cpf_middle6_full_cpf_returns_none() -> None:
+    """Full 11-digit CPFs should return None (not partial)."""
+    assert _extract_cpf_middle6("12345678901") is None
+    assert _extract_cpf_middle6("123.456.789-01") is None
+
+
+def test_extract_cpf_middle6_blank_returns_none() -> None:
+    """Blank or empty CPFs should return None."""
+    assert _extract_cpf_middle6("") is None
+    assert _extract_cpf_middle6("***.***.***-**") is None
+
+
+def test_extract_cpf_middle6_malformed_returns_none() -> None:
+    """Malformed CPFs with wrong digit count should return None."""
+    assert _extract_cpf_middle6("***.01-**") is None
+    assert _extract_cpf_middle6("12345") is None
+    assert _extract_cpf_middle6("1234567") is None
+
+
+def test_transform_adds_cpf_partial_for_masked_cpf() -> None:
+    """Masked CPFs in servidores should produce cpf_partial in transform output."""
+    import pandas as pd
+
+    pipeline = _make_pipeline()
+    _extract_from_fixtures(pipeline)
+
+    # Replace servidores with masked CPF rows
+    pipeline._raw_servidores = pd.DataFrame([
+        {
+            "cpf": "***.017.623-**",
+            "nome": "Jose Dias Toffoli",
+            "orgao": "STF",
+            "remuneracao": "39.293,32",
+        },
+        {
+            "cpf": "12345678901",
+            "nome": "Maria da Silva Santos",
+            "orgao": "Ministerio da Saude",
+            "remuneracao": "15.500,00",
+        },
+        {
+            "cpf": "",
+            "nome": "Agente Sigiloso",
+            "orgao": "Policia Federal",
+            "remuneracao": "12.000,00",
+        },
+    ])
+
+    pipeline.transform()
+
+    # Masked CPF → cpf_partial extracted
+    toffoli = next(o for o in pipeline.offices if o["name"] == "JOSE DIAS TOFFOLI")
+    assert toffoli["cpf_partial"] == "017623"
+
+    # Full CPF → cpf_partial is None
+    maria = next(o for o in pipeline.offices if o["name"] == "MARIA DA SILVA SANTOS")
+    assert maria["cpf_partial"] is None
+
+    # Blank CPF → cpf_partial is None
+    agente = next(o for o in pipeline.offices if o["name"] == "AGENTE SIGILOSO")
+    assert agente["cpf_partial"] is None
