@@ -127,8 +127,34 @@ class TSEPipeline(Pipeline):
     def load(self) -> None:
         loader = Neo4jBatchLoader(self.driver)
 
-        # Person nodes for candidates (keyed by sq_candidato)
-        loader.load_nodes("Person", self.candidates, key_field="sq_candidato")
+        # Split candidates: CPF-keyed (dedup by CPF) vs sq_candidato-only
+        cpf_candidates = [c for c in self.candidates if c.get("cpf")]
+        nocpf_candidates = [c for c in self.candidates if not c.get("cpf")]
+
+        # Merge by CPF, also store sq_candidato as a list for cross-referencing
+        if cpf_candidates:
+            cpf_deduped = deduplicate_rows(cpf_candidates, ["cpf"])
+            loader.load_nodes("Person", cpf_deduped, key_field="cpf")
+
+        # For candidates without CPF, merge by sq_candidato
+        if nocpf_candidates:
+            loader.load_nodes("Person", nocpf_candidates, key_field="sq_candidato")
+
+        # Build sq_candidato→cpf lookup for linking
+        sq_to_cpf: dict[str, str] = {}
+        for c in self.candidates:
+            if c.get("cpf"):
+                sq_to_cpf[c["sq_candidato"]] = c["cpf"]
+
+        # Map sq_candidato to Person node via Cypher SET for CANDIDATO_EM linking
+        sq_cpf_rows = [{"sq": sq, "cpf": cpf} for sq, cpf in sq_to_cpf.items()]
+        if sq_cpf_rows:
+            loader.run_query(
+                "UNWIND $rows AS row "
+                "MATCH (p:Person {cpf: row.cpf}) "
+                "SET p.sq_candidato = row.sq",
+                sq_cpf_rows,
+            )
 
         # Election nodes
         election_nodes = deduplicate_rows(
@@ -146,21 +172,31 @@ class TSEPipeline(Pipeline):
                 election_nodes,
             )
 
-        # CANDIDATO_EM relationships (via sq_candidato)
-        candidato_rels = [
-            {
-                "source_key": e["candidate_sq"],
+        # CANDIDATO_EM relationships — find person by CPF first, fallback to sq_candidato
+        candidato_rels = []
+        for e in self.elections:
+            rel: dict[str, Any] = {
                 "target_year": e["year"],
                 "target_cargo": e["cargo"],
                 "target_uf": e["uf"],
                 "target_municipio": e["municipio"],
             }
-            for e in self.elections
-        ]
+            cpf = sq_to_cpf.get(e["candidate_sq"])
+            if cpf:
+                rel["cpf"] = cpf
+                rel["sq"] = ""
+            else:
+                rel["cpf"] = ""
+                rel["sq"] = e["candidate_sq"]
+            candidato_rels.append(rel)
+
         if candidato_rels:
             loader.run_query(
                 "UNWIND $rows AS row "
-                "MATCH (p:Person {sq_candidato: row.source_key}) "
+                "OPTIONAL MATCH (p1:Person {cpf: row.cpf}) WHERE row.cpf <> '' "
+                "OPTIONAL MATCH (p2:Person {sq_candidato: row.sq}) WHERE row.sq <> '' "
+                "WITH coalesce(p1, p2) AS p, row "
+                "WHERE p IS NOT NULL "
                 "MATCH (e:Election {year: row.target_year, cargo: row.target_cargo, "
                 "uf: row.target_uf, municipio: row.target_municipio}) "
                 "MERGE (p)-[:CANDIDATO_EM]->(e)",
@@ -186,43 +222,55 @@ class TSEPipeline(Pipeline):
                 "Company", deduplicate_rows(company_donors, ["cnpj"]), key_field="cnpj"
             )
 
-        # DOOU from Person donors → candidate (via sq_candidato)
-        person_donation_rels = [
-            {
+        # DOOU from Person donors → candidate
+        person_donation_rels = []
+        for d in self.donations:
+            if d["donor_is_company"]:
+                continue
+            target_cpf = sq_to_cpf.get(d["candidate_sq"], "")
+            person_donation_rels.append({
                 "source_key": d["donor_doc"],
-                "target_key": d["candidate_sq"],
+                "target_cpf": target_cpf,
+                "target_sq": d["candidate_sq"] if not target_cpf else "",
                 "valor": d["valor"],
                 "year": d["year"],
-            }
-            for d in self.donations
-            if not d["donor_is_company"]
-        ]
+            })
         if person_donation_rels:
             loader.run_query(
                 "UNWIND $rows AS row "
                 "MATCH (d:Person {cpf: row.source_key}) "
-                "MATCH (c:Person {sq_candidato: row.target_key}) "
+                "OPTIONAL MATCH (c1:Person {cpf: row.target_cpf}) WHERE row.target_cpf <> '' "
+                "OPTIONAL MATCH (c2:Person {sq_candidato: row.target_sq}) "
+                "WHERE row.target_sq <> '' "
+                "WITH d, coalesce(c1, c2) AS c, row "
+                "WHERE c IS NOT NULL "
                 "MERGE (d)-[r:DOOU {year: row.year}]->(c) "
                 "SET r.valor = row.valor",
                 person_donation_rels,
             )
 
-        # DOOU from Company donors → candidate (via sq_candidato)
-        company_donation_rels = [
-            {
+        # DOOU from Company donors → candidate
+        company_donation_rels = []
+        for d in self.donations:
+            if not d["donor_is_company"]:
+                continue
+            target_cpf = sq_to_cpf.get(d["candidate_sq"], "")
+            company_donation_rels.append({
                 "source_key": d["donor_doc"],
-                "target_key": d["candidate_sq"],
+                "target_cpf": target_cpf,
+                "target_sq": d["candidate_sq"] if not target_cpf else "",
                 "valor": d["valor"],
                 "year": d["year"],
-            }
-            for d in self.donations
-            if d["donor_is_company"]
-        ]
+            })
         if company_donation_rels:
             loader.run_query(
                 "UNWIND $rows AS row "
                 "MATCH (d:Company {cnpj: row.source_key}) "
-                "MATCH (c:Person {sq_candidato: row.target_key}) "
+                "OPTIONAL MATCH (c1:Person {cpf: row.target_cpf}) WHERE row.target_cpf <> '' "
+                "OPTIONAL MATCH (c2:Person {sq_candidato: row.target_sq}) "
+                "WHERE row.target_sq <> '' "
+                "WITH d, coalesce(c1, c2) AS c, row "
+                "WHERE c IS NOT NULL "
                 "MERGE (d)-[r:DOOU {year: row.year}]->(c) "
                 "SET r.valor = row.valor",
                 company_donation_rels,
