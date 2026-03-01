@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from importlib import import_module
 import re
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Protocol, cast
+from collections.abc import Awaitable, Callable, Mapping
+from importlib import import_module
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from fastapi import HTTPException
 
@@ -29,17 +30,20 @@ _ComputeExposure = Callable[[Any, str], Awaitable[ExposureResponse]]
 
 def _load_pattern_queries() -> Mapping[str, str]:
     module = import_module("icarus.services.pattern_service")
-    return cast(Mapping[str, str], getattr(module, "PATTERN_QUERIES"))
+    module_any = cast("Any", module)
+    return cast("Mapping[str, str]", module_any.PATTERN_QUERIES)
 
 
 def _load_pattern_runner(name: str) -> _PatternRunner:
     module = import_module("icarus.services.pattern_service")
-    return cast(_PatternRunner, getattr(module, name))
+    module_any = cast("Any", module)
+    return cast("_PatternRunner", getattr(module_any, name))
 
 
 def _load_compute_exposure() -> _ComputeExposure:
     module = import_module("icarus.services.score_service")
-    return cast(_ComputeExposure, getattr(module, "compute_exposure"))
+    module_any = cast("Any", module)
+    return cast("_ComputeExposure", module_any.compute_exposure)
 
 
 class IntelligenceProvider(Protocol):
